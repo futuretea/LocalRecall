@@ -223,8 +223,9 @@ func search(collections collectionList) func(c echo.Context) error {
 		}
 
 		type request struct {
-			Query      string `json:"query"`
-			MaxResults int    `json:"max_results"`
+			Query         string  `json:"query"`
+			MaxResults    int     `json:"max_results"`
+			MinSimilarity float32 `json:"min_similarity"`
 		}
 
 		r := new(request)
@@ -245,12 +246,28 @@ func search(collections collectionList) func(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, errorResponse(ErrCodeInternalError, "Failed to search collection", err.Error()))
 		}
 
-		response := successResponse("Search completed successfully", map[string]interface{}{
+		// Filter results by minimum similarity threshold (0 = no filtering).
+		if r.MinSimilarity > 0 {
+			filtered := results[:0]
+			for _, res := range results {
+				if res.Similarity >= r.MinSimilarity {
+					filtered = append(filtered, res)
+				}
+			}
+			results = filtered
+		}
+
+		responseData := map[string]interface{}{
 			"query":       r.Query,
 			"max_results": r.MaxResults,
 			"results":     results,
 			"count":       len(results),
-		})
+		}
+		if r.MinSimilarity > 0 {
+			responseData["min_similarity"] = r.MinSimilarity
+		}
+
+		response := successResponse("Search completed successfully", responseData)
 		return c.JSON(http.StatusOK, response)
 	}
 }
