@@ -24,6 +24,7 @@ type PostgresDB struct {
 	embeddingDims   int
 	bm25Weight      float64
 	vectorWeight    float64
+	bm25Available   bool
 }
 
 // NewPostgresDBCollection creates a new PostgreSQL-based collection
@@ -130,7 +131,10 @@ func (p *PostgresDB) setupDatabase() error {
 	// Enable extensions - pg_textsearch is required for BM25 indexing
 	_, err := p.pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pg_textsearch")
 	if err != nil {
-		return fmt.Errorf("failed to enable pg_textsearch extension (required for BM25 indexing): %w", err)
+		xlog.Warn("pg_textsearch extension not available, BM25 hybrid search will be disabled (falling back to vector-only search)", "error", err)
+		p.bm25Available = false
+	} else {
+		p.bm25Available = true
 	}
 
 	// Check if vectorscale extension is already installed
@@ -202,14 +206,17 @@ func (p *PostgresDB) setupDatabase() error {
 		xlog.Warn("Failed to create GIN index", "error", err)
 	}
 
-	// BM25 index - required for hybrid search
-	indexName := fmt.Sprintf("idx_%s_bm25", p.tableName)
-	_, err = p.pool.Exec(ctx, fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS %s ON %s 
-		USING bm25(full_text) WITH (text_config='english')
-	`, indexName, p.tableName))
-	if err != nil {
-		return fmt.Errorf("failed to create BM25 index (required for hybrid search): %w", err)
+	// BM25 index - required for hybrid search (only if pg_textsearch is available)
+	if p.bm25Available {
+		indexName := fmt.Sprintf("idx_%s_bm25", p.tableName)
+		_, err = p.pool.Exec(ctx, fmt.Sprintf(`
+			CREATE INDEX IF NOT EXISTS %s ON %s 
+			USING bm25(full_text) WITH (text_config='english')
+		`, indexName, p.tableName))
+		if err != nil {
+			xlog.Warn("Failed to create BM25 index, disabling hybrid search", "error", err)
+			p.bm25Available = false
+		}
 	}
 
 	// Vector index (try DiskANN first if vectorscale is available, fallback to HNSW)
@@ -593,29 +600,37 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 	}
 	queryEmbeddingStr := formatVector(queryEmbedding)
 
-	// Build hybrid search query
-	// Combine BM25 score and vector similarity
-	query := fmt.Sprintf(`
-		SELECT 
-			id::text,
-			COALESCE(title, '') as title,
-			content,
-			metadata,
-			(
-				COALESCE(-(full_text <@> to_bm25query($1, 'idx_%s_bm25')), 0) * $2 +
-				COALESCE((1 - (embedding <=> $3::vector)), 0) * $4
-			) as similarity
-		FROM %s
-		WHERE embedding IS NOT NULL
-		ORDER BY similarity DESC
-		LIMIT $5
-	`, p.tableName, p.tableName)
+	var rows pgx.Rows
 
-	rows, err := p.pool.Query(ctx, query, s, p.bm25Weight, queryEmbeddingStr, p.vectorWeight, similarEntries)
-	if err != nil {
-		// If BM25 query fails, fallback to vector-only search
-		xlog.Warn("BM25 search failed, falling back to vector search", "error", err)
-		query = fmt.Sprintf(`
+	if p.bm25Available {
+		// Build hybrid search query combining BM25 score and vector similarity
+		query := fmt.Sprintf(`
+			SELECT 
+				id::text,
+				COALESCE(title, '') as title,
+				content,
+				metadata,
+				(
+					COALESCE(-(full_text <@> to_bm25query($1, 'idx_%s_bm25')), 0) * $2 +
+					COALESCE((1 - (embedding <=> $3::vector)), 0) * $4
+				) as similarity
+			FROM %s
+			WHERE embedding IS NOT NULL
+			ORDER BY similarity DESC
+			LIMIT $5
+		`, p.tableName, p.tableName)
+
+		var err error
+		rows, err = p.pool.Query(ctx, query, s, p.bm25Weight, queryEmbeddingStr, p.vectorWeight, similarEntries)
+		if err != nil {
+			xlog.Warn("BM25 hybrid search failed, falling back to vector search", "error", err)
+			rows = nil
+		}
+	}
+
+	if rows == nil {
+		// Vector-only search (fallback or BM25 not available)
+		query := fmt.Sprintf(`
 			SELECT 
 				id::text,
 				COALESCE(title, '') as title,
@@ -627,6 +642,7 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 			ORDER BY embedding <=> $1::vector
 			LIMIT $2
 		`, p.tableName)
+		var err error
 		rows, err = p.pool.Query(ctx, query, queryEmbeddingStr, similarEntries)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute search: %w", err)
