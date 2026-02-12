@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/mudler/localrecall/rag"
+	"github.com/mudler/localrecall/rag/reranker"
 	"github.com/mudler/localrecall/rag/sources"
 	"github.com/sashabaranov/go-openai"
 )
@@ -24,6 +25,12 @@ var (
 	chunkOverlap     = os.Getenv("CHUNK_OVERLAP")
 	apiKeys          = os.Getenv("API_KEYS")
 	chunkStrategy    = os.Getenv("CHUNKING_STRATEGY")
+	rerankerEnabled  = os.Getenv("RERANKER_ENABLED")
+	rerankerURL      = os.Getenv("RERANKER_URL")
+	rerankerAPIKey   = os.Getenv("RERANKER_API_KEY")
+	rerankerModel    = os.Getenv("RERANKER_MODEL")
+	rerankerVecW     = os.Getenv("RERANKER_VECTOR_WEIGHT")
+	rerankerKwW      = os.Getenv("RERANKER_KEYWORD_WEIGHT")
 	gitPrivateKey    = os.Getenv("GIT_PRIVATE_KEY")
 	sourceManager    = rag.NewSourceManager(&sources.Config{
 		GitPrivateKey: gitPrivateKey,
@@ -88,7 +95,24 @@ func startAPI(listenAddress string) {
 		}
 	}
 
-	registerAPIRoutes(e, openAIClient, chunkingSize, overlap, keys, chunkStrategy)
+	// Build reranker (nil when disabled — preserves original behaviour).
+	var rr reranker.Reranker
+	if strings.EqualFold(rerankerEnabled, "true") {
+		if rerankerURL != "" {
+			rr = reranker.NewExternalReranker(rerankerURL, rerankerAPIKey, rerankerModel)
+		} else {
+			vw, kw := 0.0, 0.0
+			if rerankerVecW != "" {
+				vw, _ = strconv.ParseFloat(rerankerVecW, 64)
+			}
+			if rerankerKwW != "" {
+				kw, _ = strconv.ParseFloat(rerankerKwW, 64)
+			}
+			rr = reranker.NewKeywordReranker(vw, kw)
+		}
+	}
+
+	registerAPIRoutes(e, openAIClient, chunkingSize, overlap, keys, chunkStrategy, rr)
 
 	e.Logger.Fatal(e.Start(listenAddress))
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/localrecall/rag"
+	"github.com/mudler/localrecall/rag/reranker"
 	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
@@ -92,7 +93,7 @@ func newVectorEngine(
 }
 
 // API routes for managing collections
-func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSize, chunkOverlap int, apiKeys []string, chunkStrategy string) {
+func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSize, chunkOverlap int, apiKeys []string, chunkStrategy string, rr reranker.Reranker) {
 
 	// Load all collections
 	colls := rag.ListAllCollections(collectionDBPath)
@@ -127,7 +128,7 @@ func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSiz
 	e.GET("/api/collections", listCollections)
 	e.GET("/api/collections/:name/entries", listFiles(collections))
 	e.GET("/api/collections/:name/entries/:entry", getEntryContent(collections))
-	e.POST("/api/collections/:name/search", search(collections))
+	e.POST("/api/collections/:name/search", search(collections, rr))
 	e.POST("/api/collections/:name/reset", reset(collections))
 	e.DELETE("/api/collections/:name/entry/delete", deleteEntryFromCollection(collections))
 	e.POST("/api/collections/:name/sources", registerExternalSource(collections))
@@ -214,7 +215,7 @@ func reset(collections collectionList) func(c echo.Context) error {
 	}
 }
 
-func search(collections collectionList) func(c echo.Context) error {
+func search(collections collectionList, rr reranker.Reranker) func(c echo.Context) error {
 	return func(c echo.Context) error {
 		name := c.Param("name")
 		collection, exists := collections[name]
@@ -242,9 +243,28 @@ func search(collections collectionList) func(c echo.Context) error {
 			}
 		}
 
-		results, err := collection.SearchWithFilters(r.Query, r.MaxResults, r.Filters)
+		// When reranker is active, over-fetch to give the reranker more candidates.
+		fetchCount := r.MaxResults
+		if rr != nil {
+			fetchCount = r.MaxResults * 4
+			if fetchCount < 20 {
+				fetchCount = 20
+			}
+		}
+
+		results, err := collection.SearchWithFilters(r.Query, fetchCount, r.Filters)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, errorResponse(ErrCodeInternalError, "Failed to search collection", err.Error()))
+		}
+
+		// Rerank if enabled.
+		if rr != nil && len(results) > 0 {
+			reranked, err := rr.Rerank(r.Query, results, r.MaxResults)
+			if err != nil {
+				xlog.Warn("Reranking failed, returning original results", "error", err)
+			} else {
+				results = reranked
+			}
 		}
 
 		// Filter results by minimum similarity threshold (0 = no filtering).
