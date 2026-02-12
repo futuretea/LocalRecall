@@ -1,0 +1,29 @@
+# Build the Go binary in a separate stage utilizing Makefile
+FROM golang:1.24 AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN make build
+
+# Use the official Ubuntu 22.04 image as a base for the final image
+FROM ubuntu:22.04 AS base
+
+# Install ca-certificates to ensure TLS verification works
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Copy enterprise CA certificate (placeholder, will be replaced during build)
+COPY enterprise-ca.crt /usr/local/share/ca-certificates/enterprise-ca.crt
+
+# Update CA certificates
+RUN update-ca-certificates
+
+COPY --from=builder /app/localrecall /localrecall
+
+# Expose necessary ports
+EXPOSE 8080
+
+# Set default command to start the Go application
+ENTRYPOINT [ "/localrecall" ]
