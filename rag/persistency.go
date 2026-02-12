@@ -28,11 +28,12 @@ type CollectionState struct {
 type PersistentKB struct {
 	Engine
 	sync.Mutex
-	path         string
-	assetDir     string
-	maxChunkSize int
-	chunkOverlap int
-	sources      []*ExternalSource
+	path           string
+	assetDir       string
+	maxChunkSize   int
+	chunkOverlap   int
+	chunkStrategy  string
+	sources        []*ExternalSource
 
 	index map[string][]engine.Result
 }
@@ -58,7 +59,7 @@ func loadDB(path string) (*CollectionState, error) {
 	return state, nil
 }
 
-func NewPersistentCollectionKB(stateFile, assetDir string, store Engine, maxChunkSize, chunkOverlap int, llmClient *openai.Client, embeddingModel string) (*PersistentKB, error) {
+func NewPersistentCollectionKB(stateFile, assetDir string, store Engine, maxChunkSize, chunkOverlap int, llmClient *openai.Client, embeddingModel, chunkStrategy string) (*PersistentKB, error) {
 	// if file exists, try to load an existing state
 	// if file does not exist, create a new state
 	if err := os.MkdirAll(assetDir, 0755); err != nil {
@@ -67,13 +68,14 @@ func NewPersistentCollectionKB(stateFile, assetDir string, store Engine, maxChun
 
 	if _, err := os.Stat(stateFile); err != nil {
 		persistentKB := &PersistentKB{
-			path:         stateFile,
-			Engine:       store,
-			assetDir:     assetDir,
-			maxChunkSize: maxChunkSize,
-			chunkOverlap: chunkOverlap,
-			sources:      []*ExternalSource{},
-			index:        map[string][]engine.Result{},
+			path:          stateFile,
+			Engine:        store,
+			assetDir:      assetDir,
+			maxChunkSize:  maxChunkSize,
+			chunkOverlap:  chunkOverlap,
+			chunkStrategy: chunkStrategy,
+			sources:       []*ExternalSource{},
+			index:         map[string][]engine.Result{},
 		}
 		persistentKB.Lock()
 		defer persistentKB.Unlock()
@@ -85,13 +87,14 @@ func NewPersistentCollectionKB(stateFile, assetDir string, store Engine, maxChun
 		return nil, err
 	}
 	db := &PersistentKB{
-		Engine:       store,
-		path:         stateFile,
-		maxChunkSize: maxChunkSize,
-		chunkOverlap: chunkOverlap,
-		assetDir:     assetDir,
-		sources:      state.ExternalSources,
-		index:        state.Index,
+		Engine:        store,
+		path:          stateFile,
+		maxChunkSize:  maxChunkSize,
+		chunkOverlap:  chunkOverlap,
+		chunkStrategy: chunkStrategy,
+		assetDir:      assetDir,
+		sources:       state.ExternalSources,
+		index:         state.Index,
 	}
 
 	// TODO: Automatically repopulate if embeddings dimensions are mismatching.
@@ -354,7 +357,7 @@ func (db *PersistentKB) store(metadata map[string]string, files ...string) ([]en
 
 	for _, c := range files {
 		e := filepath.Join(db.assetDir, filepath.Base(c))
-		pieces, err := chunkFile(e, db.maxChunkSize, db.chunkOverlap)
+		pieces, err := chunkFile(e, db.maxChunkSize, db.chunkOverlap, db.chunkStrategy)
 		if err != nil {
 			return nil, err
 		}
@@ -490,15 +493,21 @@ func fileToText(fpath string) (string, error) {
 	}
 }
 
-func chunkFile(fpath string, maxchunksize, chunkOverlap int) ([]string, error) {
+func chunkFile(fpath string, maxchunksize, chunkOverlap int, strategy string) ([]string, error) {
 	content, err := fileToText(fpath)
 	if err != nil {
 		return nil, err
 	}
 
 	opts := chunk.Options{MaxSize: maxchunksize, Overlap: chunkOverlap, SplitLongWords: true}
-	chunks := chunk.SplitParagraphIntoChunksWithOptions(content, opts)
-	xlog.Info("Chunked file", "file", fpath, "content_length", len(content), "max_chunk_size", maxchunksize, "chunk_overlap", chunkOverlap, "chunk_count", len(chunks))
+	var chunks []string
+	switch strategy {
+	case "recursive":
+		chunks = chunk.RecursiveSplitWithOptions(content, opts)
+	default:
+		chunks = chunk.SplitParagraphIntoChunksWithOptions(content, opts)
+	}
+	xlog.Info("Chunked file", "file", fpath, "content_length", len(content), "max_chunk_size", maxchunksize, "chunk_overlap", chunkOverlap, "strategy", strategy, "chunk_count", len(chunks))
 	return chunks, nil
 }
 

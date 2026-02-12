@@ -67,14 +67,14 @@ func errorResponse(code string, message string, details string) APIResponse {
 func newVectorEngine(
 	vectorEngineType string,
 	llmClient *openai.Client,
-	apiURL, apiKey, collectionName, dbPath, embeddingModel string, maxChunkSize, chunkOverlap int) *rag.PersistentKB {
+	apiURL, apiKey, collectionName, dbPath, embeddingModel string, maxChunkSize, chunkOverlap int, chunkStrategy string) *rag.PersistentKB {
 	switch vectorEngineType {
 	case "chromem":
 		xlog.Info("Chromem collection", "collectionName", collectionName, "dbPath", dbPath)
-		return rag.NewPersistentChromeCollection(llmClient, collectionName, dbPath, fileAssets, embeddingModel, maxChunkSize, chunkOverlap)
+		return rag.NewPersistentChromeCollection(llmClient, collectionName, dbPath, fileAssets, embeddingModel, maxChunkSize, chunkOverlap, chunkStrategy)
 	case "localai":
 		xlog.Info("LocalAI collection", "collectionName", collectionName, "apiURL", apiURL)
-		return rag.NewPersistentLocalAICollection(llmClient, apiURL, apiKey, collectionName, dbPath, fileAssets, embeddingModel, maxChunkSize, chunkOverlap)
+		return rag.NewPersistentLocalAICollection(llmClient, apiURL, apiKey, collectionName, dbPath, fileAssets, embeddingModel, maxChunkSize, chunkOverlap, chunkStrategy)
 	case "postgres":
 		databaseURL := os.Getenv("DATABASE_URL")
 		if databaseURL == "" {
@@ -82,7 +82,7 @@ func newVectorEngine(
 			os.Exit(1)
 		}
 		xlog.Info("PostgreSQL collection", "collectionName", collectionName, "databaseURL", databaseURL)
-		return rag.NewPersistentPostgresCollection(llmClient, collectionName, dbPath, fileAssets, embeddingModel, maxChunkSize, chunkOverlap, databaseURL)
+		return rag.NewPersistentPostgresCollection(llmClient, collectionName, dbPath, fileAssets, embeddingModel, maxChunkSize, chunkOverlap, databaseURL, chunkStrategy)
 	default:
 		xlog.Error("Unknown vector engine", "engine", vectorEngineType)
 		os.Exit(1)
@@ -92,12 +92,12 @@ func newVectorEngine(
 }
 
 // API routes for managing collections
-func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSize, chunkOverlap int, apiKeys []string) {
+func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSize, chunkOverlap int, apiKeys []string, chunkStrategy string) {
 
 	// Load all collections
 	colls := rag.ListAllCollections(collectionDBPath)
 	for _, c := range colls {
-		collection := newVectorEngine(vectorEngine, openAIClient, openAIBaseURL, openAIKey, c, collectionDBPath, embeddingModel, maxChunkingSize, chunkOverlap)
+		collection := newVectorEngine(vectorEngine, openAIClient, openAIBaseURL, openAIKey, c, collectionDBPath, embeddingModel, maxChunkingSize, chunkOverlap, chunkStrategy)
 		collections[c] = collection
 		// Register the collection with the source manager
 		sourceManager.RegisterCollection(c, collection)
@@ -122,7 +122,7 @@ func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSiz
 		})
 	}
 
-	e.POST("/api/collections", createCollection(collections, openAIClient, embeddingModel, maxChunkingSize, chunkOverlap))
+	e.POST("/api/collections", createCollection(collections, openAIClient, embeddingModel, maxChunkingSize, chunkOverlap, chunkStrategy))
 	e.POST("/api/collections/:name/upload", uploadFile(collections, fileAssets))
 	e.GET("/api/collections", listCollections)
 	e.GET("/api/collections/:name/entries", listFiles(collections))
@@ -136,7 +136,7 @@ func registerAPIRoutes(e *echo.Echo, openAIClient *openai.Client, maxChunkingSiz
 }
 
 // createCollection handles creating a new collection
-func createCollection(collections collectionList, client *openai.Client, embeddingModel string, maxChunkingSize, chunkOverlap int) func(c echo.Context) error {
+func createCollection(collections collectionList, client *openai.Client, embeddingModel string, maxChunkingSize, chunkOverlap int, chunkStrategy string) func(c echo.Context) error {
 	return func(c echo.Context) error {
 		type request struct {
 			Name string `json:"name"`
@@ -147,7 +147,7 @@ func createCollection(collections collectionList, client *openai.Client, embeddi
 			return c.JSON(http.StatusBadRequest, errorResponse(ErrCodeInvalidRequest, "Invalid request", err.Error()))
 		}
 
-		collection := newVectorEngine(vectorEngine, client, openAIBaseURL, openAIKey, r.Name, collectionDBPath, embeddingModel, maxChunkingSize, chunkOverlap)
+		collection := newVectorEngine(vectorEngine, client, openAIBaseURL, openAIKey, r.Name, collectionDBPath, embeddingModel, maxChunkingSize, chunkOverlap, chunkStrategy)
 		collections[r.Name] = collection
 
 		// Register the new collection with the source manager

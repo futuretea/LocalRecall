@@ -126,4 +126,90 @@ var _ = Describe("Chunk", func() {
 			}
 		})
 	})
+
+	Describe("RecursiveSplitWithOptions", func() {
+		It("should split on paragraph boundaries", func() {
+			text := "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 30, SplitLongWords: true})
+			Expect(chunks).To(HaveLen(3))
+			Expect(chunks[0]).To(Equal("First paragraph."))
+			Expect(chunks[1]).To(Equal("Second paragraph."))
+			Expect(chunks[2]).To(Equal("Third paragraph."))
+		})
+
+		It("should merge small paragraphs within MaxSize", func() {
+			text := "Hi.\n\nOk."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 100, SplitLongWords: true})
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0]).To(Equal(text))
+		})
+
+		It("should fall back to line splitting when paragraph is too large", func() {
+			text := "Line one.\nLine two.\nLine three."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 20, SplitLongWords: true})
+			Expect(chunks).ToNot(BeEmpty())
+			for _, c := range chunks {
+				Expect(len(c)).To(BeNumerically("<=", 20))
+			}
+		})
+
+		It("should fall back to sentence splitting", func() {
+			text := "First sentence. Second sentence. Third sentence."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 25, SplitLongWords: true})
+			Expect(chunks).ToNot(BeEmpty())
+			for _, c := range chunks {
+				Expect(len(c)).To(BeNumerically("<=", 25))
+			}
+		})
+
+		It("should handle long words with SplitLongWords true", func() {
+			text := "superlongword end"
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 5, SplitLongWords: true})
+			Expect(chunks).ToNot(BeEmpty())
+			for _, c := range chunks {
+				Expect(len(c)).To(BeNumerically("<=", 5))
+			}
+		})
+
+		It("should handle empty text", func() {
+			chunks := RecursiveSplitWithOptions("", Options{MaxSize: 100, SplitLongWords: true})
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0]).To(BeEmpty())
+		})
+
+		It("should handle text smaller than MaxSize", func() {
+			text := "Short text"
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 100, SplitLongWords: true})
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0]).To(Equal(text))
+		})
+
+		It("should apply overlap between chunks", func() {
+			text := "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 40, Overlap: 10, SplitLongWords: true})
+			Expect(len(chunks)).To(BeNumerically(">=", 2))
+			for _, c := range chunks {
+				Expect(len(c)).To(BeNumerically("<=", 40))
+			}
+		})
+
+		It("should respect MaxSize across all levels", func() {
+			text := "First paragraph here.\n\nSecond has lines.\nLine two.\nLine three.\n\nThird has sentences. Sentence two. Sentence three."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 30, SplitLongWords: true})
+			Expect(chunks).ToNot(BeEmpty())
+			for _, c := range chunks {
+				Expect(len(c)).To(BeNumerically("<=", 30), "chunk too large: %q (%d chars)", c, len(c))
+			}
+		})
+
+		It("should preserve content (no data loss)", func() {
+			text := "Hello world.\n\nThis is a test.\n\nGoodbye."
+			chunks := RecursiveSplitWithOptions(text, Options{MaxSize: 20, SplitLongWords: true})
+			rejoined := strings.Join(chunks, "")
+			// All original words should appear in the output.
+			for _, word := range strings.Fields(text) {
+				Expect(rejoined).To(ContainSubstring(word))
+			}
+		})
+	})
 })

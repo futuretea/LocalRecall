@@ -23,6 +23,7 @@ var (
 	maxChunkingSize  = os.Getenv("MAX_CHUNKING_SIZE")
 	chunkOverlap     = os.Getenv("CHUNK_OVERLAP")
 	apiKeys          = os.Getenv("API_KEYS")
+	chunkStrategy    = os.Getenv("CHUNKING_STRATEGY")
 	gitPrivateKey    = os.Getenv("GIT_PRIVATE_KEY")
 	sourceManager    = rag.NewSourceManager(&sources.Config{
 		GitPrivateKey: gitPrivateKey,
@@ -87,7 +88,7 @@ func startAPI(listenAddress string) {
 		}
 	}
 
-	registerAPIRoutes(e, openAIClient, chunkingSize, overlap, keys)
+	registerAPIRoutes(e, openAIClient, chunkingSize, overlap, keys, chunkStrategy)
 
 	e.Logger.Fatal(e.Start(listenAddress))
 }

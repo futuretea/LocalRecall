@@ -177,6 +177,134 @@ func SplitParagraphIntoChunksWithOptions(paragraph string, opts Options) []strin
 	return chunks
 }
 
+// defaultSeparators is the hierarchy of separators used by recursive splitting.
+// Each level attempts to preserve larger semantic boundaries first.
+var defaultSeparators = []string{"\n\n", "\n", ". ", " "}
+
+// RecursiveSplitWithOptions splits text by trying separators in order of
+// decreasing granularity (paragraph → line → sentence → word). Segments that
+// fit within opts.MaxSize are kept as-is; oversized segments are recursively
+// split with the next separator. This preserves natural boundaries better than
+// fixed-size word-boundary splitting.
+//
+// The function reuses overlapTail and splitLongString for overlap and fallback.
+func RecursiveSplitWithOptions(text string, opts Options) []string {
+	maxSize := opts.MaxSize
+	if maxSize <= 0 {
+		maxSize = 1
+	}
+	overlap := opts.Overlap
+	if overlap >= maxSize {
+		overlap = maxSize - 1
+	}
+	if overlap < 0 {
+		overlap = 0
+	}
+
+	if text == "" {
+		return []string{""}
+	}
+	if len(text) <= maxSize {
+		return []string{text}
+	}
+
+	chunks := recursiveSplit(text, defaultSeparators, maxSize, opts.SplitLongWords)
+	if overlap == 0 || len(chunks) <= 1 {
+		return chunks
+	}
+
+	// Apply overlap between consecutive chunks.
+	result := make([]string, 0, len(chunks))
+	for i, c := range chunks {
+		if i == 0 {
+			result = append(result, c)
+			continue
+		}
+		tail := overlapTail(chunks[i-1], overlap)
+		if tail != "" && len(tail)+1+len(c) <= maxSize {
+			result = append(result, tail+" "+c)
+		} else if tail != "" && len(tail) < len(c) {
+			// Overlap would exceed maxSize — try trimming c from the end
+			// to fit. If that's not possible, just keep c as-is.
+			result = append(result, c)
+		} else {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+// recursiveSplit is the core recursive splitting logic.
+func recursiveSplit(text string, separators []string, maxSize int, splitLong bool) []string {
+	if len(text) <= maxSize {
+		return []string{text}
+	}
+
+	// No separators left — fall back to hard character split.
+	if len(separators) == 0 {
+		if splitLong {
+			return splitLongString(text, maxSize)
+		}
+		return []string{text}
+	}
+
+	sep := separators[0]
+	rest := separators[1:]
+	parts := strings.Split(text, sep)
+
+	// If the separator didn't actually split anything, try the next one.
+	if len(parts) == 1 {
+		return recursiveSplit(text, rest, maxSize, splitLong)
+	}
+
+	var chunks []string
+	var current strings.Builder
+
+	for i, part := range parts {
+		if part == "" && i < len(parts)-1 {
+			// Preserve separator in accumulation (e.g. consecutive \n\n).
+			if current.Len() > 0 {
+				current.WriteString(sep)
+			}
+			continue
+		}
+
+		// What the chunk would look like if we append this part.
+		var candidate int
+		if current.Len() > 0 {
+			candidate = current.Len() + len(sep) + len(part)
+		} else {
+			candidate = len(part)
+		}
+
+		if candidate <= maxSize {
+			if current.Len() > 0 {
+				current.WriteString(sep)
+			}
+			current.WriteString(part)
+		} else {
+			// Flush accumulated text.
+			if current.Len() > 0 {
+				chunks = append(chunks, current.String())
+				current.Reset()
+			}
+			// If this single part exceeds maxSize, recurse with next separator.
+			if len(part) > maxSize {
+				sub := recursiveSplit(part, rest, maxSize, splitLong)
+				chunks = append(chunks, sub...)
+			} else {
+				current.WriteString(part)
+			}
+		}
+	}
+
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+
+	return chunks
+}
+
 // SplitParagraphIntoChunks takes a paragraph and a maxChunkSize as input,
 // and returns a slice of strings where each string is a chunk of the paragraph
 // that is at most maxChunkSize long, ensuring that words are not split.

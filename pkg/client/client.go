@@ -66,13 +66,17 @@ func (c *Client) ListCollections() ([]string, error) {
 		return nil, errors.New("failed to list collections")
 	}
 
-	var collections []string
-	err = json.NewDecoder(resp.Body).Decode(&collections)
+	var result struct {
+		Data struct {
+			Collections []string `json:"collections"`
+		} `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
 		return nil, err
 	}
 
-	return collections, nil
+	return result.Data.Collections, nil
 }
 
 // ListEntries lists all entries in a collection
@@ -178,13 +182,17 @@ func (c *Client) DeleteEntry(collection, entry string) ([]string, error) {
 		return nil, errors.New("failed to delete collection: " + bodyResult.String())
 	}
 
-	var results []string
-	err = json.NewDecoder(resp.Body).Decode(&results)
+	var result struct {
+		Data struct {
+			RemainingEntries []string `json:"remaining_entries"`
+		} `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
 		return nil, err
 	}
 
-	return results, nil
+	return result.Data.RemainingEntries, nil
 }
 
 // Search searches a collection
@@ -211,13 +219,17 @@ func (c *Client) Search(collection, query string, maxResults int) ([]types.Resul
 		return nil, errors.New("failed to search collection")
 	}
 
-	var results []types.Result
-	err = json.NewDecoder(resp.Body).Decode(&results)
+	var result struct {
+		Data struct {
+			Results []types.Result `json:"results"`
+		} `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
 		return nil, err
 	}
 
-	return results, nil
+	return result.Data.Results, nil
 }
 
 func (c *Client) Reset(collection string) error {
