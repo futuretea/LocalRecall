@@ -119,9 +119,21 @@ func NewPersistentCollectionKB(stateFile, assetDir string, store Engine, maxChun
 }
 
 func (db *PersistentKB) Search(s string, similarEntries int) ([]types.Result, error) {
+	return db.SearchWithFilters(s, similarEntries, nil)
+}
+
+// SearchWithFilters searches the knowledge base with optional metadata filters.
+// If the underlying engine implements FilteredSearcher and filters are non-empty,
+// it delegates to SearchWithFilters; otherwise it falls back to the standard Search.
+func (db *PersistentKB) SearchWithFilters(s string, similarEntries int, filters map[string]string) ([]types.Result, error) {
 	db.Lock()
 	defer db.Unlock()
 
+	if len(filters) > 0 {
+		if fs, ok := db.Engine.(FilteredSearcher); ok {
+			return fs.SearchWithFilters(s, similarEntries, filters)
+		}
+	}
 	return db.Engine.Search(s, similarEntries)
 }
 

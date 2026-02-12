@@ -168,7 +168,16 @@ func (c *ChromemDB) GetByID(id string) (types.Result, error) {
 }
 
 func (c *ChromemDB) Search(s string, similarEntries int) ([]types.Result, error) {
-	res, err := c.collection.Query(context.Background(), s, similarEntries, nil, nil)
+	return c.searchWithWhere(s, similarEntries, nil)
+}
+
+// SearchWithFilters implements the FilteredSearcher optional interface.
+func (c *ChromemDB) SearchWithFilters(query string, maxResults int, filters map[string]string) ([]types.Result, error) {
+	return c.searchWithWhere(query, maxResults, filters)
+}
+
+func (c *ChromemDB) searchWithWhere(s string, similarEntries int, where map[string]string) ([]types.Result, error) {
+	res, err := c.collection.Query(context.Background(), s, similarEntries, where, nil)
 	if err != nil {
 		return nil, err
 	}

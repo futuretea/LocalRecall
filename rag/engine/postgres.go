@@ -591,6 +591,15 @@ func (p *PostgresDB) GetByID(id string) (types.Result, error) {
 }
 
 func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error) {
+	return p.searchInternal(s, similarEntries, nil)
+}
+
+// SearchWithFilters implements the FilteredSearcher optional interface.
+func (p *PostgresDB) SearchWithFilters(query string, maxResults int, filters map[string]string) ([]types.Result, error) {
+	return p.searchInternal(query, maxResults, filters)
+}
+
+func (p *PostgresDB) searchInternal(s string, similarEntries int, filters map[string]string) ([]types.Result, error) {
 	ctx := context.Background()
 
 	// Get query embedding
@@ -600,10 +609,26 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 	}
 	queryEmbeddingStr := formatVector(queryEmbedding)
 
+	// Build optional metadata filter clause.
+	var filterClause string
+	var filterArgs []interface{}
+	filterArgOffset := 0
+	if len(filters) > 0 {
+		var conditions []string
+		for k, v := range filters {
+			// Use high parameter indices to avoid collision with search params.
+			i1 := 100 + filterArgOffset
+			i2 := 101 + filterArgOffset
+			conditions = append(conditions, fmt.Sprintf("metadata->>$%d = $%d", i1, i2))
+			filterArgs = append(filterArgs, k, v)
+			filterArgOffset += 2
+		}
+		filterClause = " AND " + strings.Join(conditions, " AND ")
+	}
+
 	var rows pgx.Rows
 
 	if p.bm25Available {
-		// Build hybrid search query combining BM25 score and vector similarity
 		query := fmt.Sprintf(`
 			SELECT 
 				id::text,
@@ -615,13 +640,15 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 					COALESCE((1 - (embedding <=> $3::vector)), 0) * $4
 				) as similarity
 			FROM %s
-			WHERE embedding IS NOT NULL
+			WHERE embedding IS NOT NULL%s
 			ORDER BY similarity DESC
 			LIMIT $5
-		`, p.tableName, p.tableName)
+		`, p.tableName, p.tableName, filterClause)
 
+		args := []interface{}{s, p.bm25Weight, queryEmbeddingStr, p.vectorWeight, similarEntries}
+		args = append(args, filterArgs...)
 		var err error
-		rows, err = p.pool.Query(ctx, query, s, p.bm25Weight, queryEmbeddingStr, p.vectorWeight, similarEntries)
+		rows, err = p.pool.Query(ctx, query, args...)
 		if err != nil {
 			xlog.Warn("BM25 hybrid search failed, falling back to vector search", "error", err)
 			rows = nil
@@ -629,7 +656,6 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 	}
 
 	if rows == nil {
-		// Vector-only search (fallback or BM25 not available)
 		query := fmt.Sprintf(`
 			SELECT 
 				id::text,
@@ -638,12 +664,14 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 				metadata,
 				(1 - (embedding <=> $1::vector)) as similarity
 			FROM %s
-			WHERE embedding IS NOT NULL
+			WHERE embedding IS NOT NULL%s
 			ORDER BY embedding <=> $1::vector
 			LIMIT $2
-		`, p.tableName)
+		`, p.tableName, filterClause)
+		args := []interface{}{queryEmbeddingStr, similarEntries}
+		args = append(args, filterArgs...)
 		var err error
-		rows, err = p.pool.Query(ctx, query, queryEmbeddingStr, similarEntries)
+		rows, err = p.pool.Query(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute search: %w", err)
 		}
@@ -661,7 +689,6 @@ func (p *PostgresDB) Search(s string, similarEntries int) ([]types.Result, error
 			continue
 		}
 
-		// Parse metadata
 		r.Metadata = make(map[string]string)
 		if len(metadataJSON) > 0 {
 			if err := json.Unmarshal(metadataJSON, &r.Metadata); err != nil {
